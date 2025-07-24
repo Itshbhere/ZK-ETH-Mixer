@@ -1,15 +1,25 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
+import {Poseidon2, Field} from "@poseidon/src/Poseidon2.sol";
+
 contract IncrementalMerkleTree {
+    Poseidon2 public immutable HasherContract;
+
     uint32 public immutable MAX_DEPTH;
-    bytes32 public IncrementalRoot;
+    uint32 public constant MAX_STORED_ROOTS = 30;
+    uint32 public NextLeafIndex;
+    uint32 public CurrentRootIndex;
+
+    mapping(uint256 => bytes32) public MerkleRoots;
+    mapping(uint32 => bytes32) public CachedSubtrees;
 
     error IncrementalMerkleTreeDepthCannotBeZero();
     error IncrementalMerkleTreeDepthCannotBeGreaterThan32();
     error DepthOutOfBound();
+    error MerkleTreeFull();
 
-    constructor(uint32 _maxDepth) {
+    constructor(uint32 _maxDepth, Poseidon2 _HasherContract) {
         if (_maxDepth == 0) {
             revert IncrementalMerkleTreeDepthCannotBeZero();
         }
@@ -17,17 +27,52 @@ contract IncrementalMerkleTree {
             revert IncrementalMerkleTreeDepthCannotBeGreaterThan32();
         }
         MAX_DEPTH = _maxDepth;
-
+        HasherContract = _HasherContract;
         // Initialize the Merkle tree with a zeros (Precompute all the zero subtrees)
         // Store the initial root in storage
-        IncrementalRoot = _zeroInitiating(_maxDepth);
+        MerkleRoots[0] = _zeroInitiating(_maxDepth);
     }
 
-    function insert(bytes32 _commitment) internal {
-        // Logic to insert the commitment into the Merkle tree
+    function insert(bytes32 _leaf) internal returns (uint32) {
+        // Insert a new leaf into the Merkle tree
+        uint32 Nextindex = NextLeafIndex;
+        // Check if the index exceeds the Merkle tre Bound
+        if (Nextindex >= uint32(2) ** MAX_DEPTH) {
+            revert MerkleTreeFull();
+        }
+        // Figure out if the index is even
+
+        uint32 CurrentIndex = Nextindex;
+        bytes32 CurrentHash = _leaf;
+        bytes32 left;
+        bytes32 right;
+        for (uint32 i = 0; i < MAX_DEPTH; i++) {
+            if (CurrentIndex % 2 == 0) {
+                // If it is even, put the new leaf at the left side and a zero tree on the right side
+                left = CurrentHash;
+                right = _zeroInitiating(i);
+                // Store the result as cached subtree
+                CachedSubtrees[i] = CurrentHash;
+            } else {
+                // If it is odd, put the new leaf at the right and cached subtree on the left side
+                left = CachedSubtrees[i];
+                right = CurrentHash;
+            }
+            // Hash(left, right)
+            CurrentHash = Field.toBytes32(HasherContract.hash_2(Field.toField(left), Field.toField(right)));
+            CurrentIndex = CurrentIndex / 2;
+        }
+        // Update the IncrementalRoot with the new hash
+        uint32 NewRootIndex = (CurrentRootIndex + 1) % MAX_STORED_ROOTS;
+        CurrentRootIndex = NewRootIndex;
+        MerkleRoots[NewRootIndex] = CurrentHash;
+
+        // Increment the NextLeafIndex
+        NextLeafIndex = Nextindex + 1;
+        return Nextindex;
     }
 
-    function _zeroInitiating(uint32 i) internal view returns (bytes32) {
+    function _zeroInitiating(uint32 i) internal pure returns (bytes32) {
         if (i == 0) return bytes32(0x2a8d2e6f5510193d5ca22830bb860c4a0cc4bd307b50c6472ad6dc54b351d4b0);
         else if (i == 1) return bytes32(0x24c8b9d5d2ce025c1c2e5af14db8fc2ae95380d9ee020a531e1256a45659f28c);
         else if (i == 2) return bytes32(0x218432a81a04ba0f233ba47ae7b860ca4374977efe290a5a28b7c110a8735aa8);
